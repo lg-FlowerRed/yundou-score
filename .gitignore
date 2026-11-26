@@ -5,6 +5,7 @@
 /.vs/
 /bin/
 /obj/
+/answers/
 
 # Builds, archives and exported or cached scores
 *.exe

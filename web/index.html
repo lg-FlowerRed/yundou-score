@@ -19,12 +19,12 @@
     <main class="layout">
       <section class="query" aria-labelledby="page-title">
         <h1 id="page-title">阅卷回执</h1>
-        <p class="intro">按赛事汇总云斗各省成绩，导出 Excel 工作簿。</p>
+        <p class="intro">按赛事汇总成绩、分省导出 Excel，或导出选手代码。</p>
         <form id="query-form" autocomplete="off">
           <fieldset class="form-fields" id="query-fields" disabled>
             <legend class="sr-only">查询设置</legend>
             <label for="query" class="field-label">赛事名称</label>
-            <input id="query" name="query" type="text" required placeholder="例如：NOIP 2025">
+            <input id="query" name="query" class="field-control" type="text" required placeholder="例如：NOIP 2025">
 
             <fieldset class="kind">
               <legend class="field-label">数据类型</legend>
@@ -34,19 +34,58 @@
               </div>
             </fieldset>
 
+            <fieldset class="task-options">
+              <legend class="field-label"><label for="mode">任务模式</label></legend>
+              <select id="mode" name="mode" class="field-control">
+                <option value="all">全部省份成绩汇总</option>
+                <option value="province">单独导出省份成绩</option>
+                <option value="code">导出选手代码</option>
+              </select>
+            </fieldset>
+
+            <fieldset class="task-options" id="province-options" aria-describedby="province-hint" hidden disabled>
+              <legend class="field-label">选择省份</legend>
+              <p class="field-note" id="province-hint">可多选，每个省份单独导出。</p>
+              <p class="field-note selection-count" id="selected-count" role="status">已选择 0 个省份</p>
+              <div class="province-choices" id="province-choices"></div>
+            </fieldset>
+
+            <fieldset class="task-options" id="code-options" hidden disabled>
+              <legend class="sr-only">代码导出设置</legend>
+              <label class="option"><input type="checkbox" name="compress" aria-describedby="compress-hint" checked>压缩为 ZIP</label>
+              <p class="hint" id="compress-hint">取消勾选后按省份导出文件夹。</p>
+            </fieldset>
+
+            <fieldset class="task-options" id="group-options" hidden disabled>
+              <legend class="field-label"><label for="group">NOIP 成绩范围</label></legend>
+              <select id="group" name="group" class="field-control">
+                <option value="full">完整成绩</option>
+                <option value="high">高中</option>
+                <option value="junior">初中</option>
+              </select>
+            </fieldset>
+
+            <fieldset class="task-options" id="cutoff-options" aria-describedby="cutoff-hint" hidden disabled>
+              <legend class="field-label">高中实际参赛人数</legend>
+              <p class="field-note" id="cutoff-hint">为每个所选省份填写整数（0–9,999,999）；没有高中选手请填 0。</p>
+              <p class="field-note" id="cutoff-message" role="status"></p>
+              <div class="cutoff-fields" id="cutoff-fields"></div>
+            </fieldset>
+
             <label class="option refresh"><input type="checkbox" name="refresh" aria-describedby="refresh-hint">重新下载成绩</label>
             <p id="refresh-hint" class="hint">不勾选时优先使用本地缓存。</p>
             <button type="submit" class="button button-primary" id="start">开始汇总</button>
           </fieldset>
+          <p id="form-message" class="action-message" role="status" aria-atomic="true"></p>
         </form>
-        <p class="scope">只汇总当前账号可查看的成绩，结果不是 CCF 发布的官方全国榜。</p>
+        <p class="scope">只处理当前账号可查看的数据。成绩导出结果不是 CCF 发布的官方榜单。</p>
       </section>
 
       <section class="receipt" aria-labelledby="receipt-title">
         <header class="receipt-head">
           <div class="receipt-title-line">
             <h2 id="receipt-title" tabindex="-1">省份回执</h2>
-            <button type="button" class="button button-stop" id="stop" hidden disabled>停止汇总</button>
+            <button type="button" class="button button-stop" id="stop" hidden disabled>停止任务</button>
           </div>
           <div class="status" id="status" role="status" aria-atomic="true">
             <span id="phase" class="phase" data-tone="neutral">连接中</span>
@@ -59,23 +98,27 @@
         </header>
 
         <table class="province-table">
-          <caption class="sr-only">各省成绩汇总进度、来源和记录数</caption>
+          <caption class="sr-only">各省任务进度、来源和数量</caption>
           <thead>
             <tr>
               <th scope="col">省份</th>
               <th scope="col">进度</th>
               <th scope="col">来源</th>
-              <th scope="col">记录数</th>
+              <th scope="col" id="count-heading">记录数</th>
             </tr>
           </thead>
           <tbody id="provinces">
-            <tr><td class="empty" colspan="4">开始汇总后，这里会显示各省进度。</td></tr>
+            <tr><td class="empty" colspan="4">启动任务后，这里会显示省份进度。</td></tr>
           </tbody>
         </table>
 
         <footer class="receipt-footer">
-          <p id="result-message">工作簿生成后即可下载。</p>
-          <button type="button" class="button button-download" id="download" disabled>下载 Excel</button>
+          <div class="result-details">
+            <p id="result-message">任务完成后，这里会显示结果。</p>
+            <p class="result-path" id="result-path-row" hidden>结果目录：<bdi id="result-path"></bdi></p>
+          </div>
+          <button type="button" class="button button-download" id="download" hidden disabled>下载 Excel</button>
+          <button type="button" class="button button-download" id="open-result" hidden disabled>打开结果文件夹</button>
         </footer>
       </section>
     </main>

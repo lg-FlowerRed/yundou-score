@@ -25,6 +25,7 @@ namespace YundouScore
         private readonly Dictionary<string, Receipt> provinces = new Dictionary<string, Receipt>();
         private readonly string results;
         private string host, origin, phase = "idle", message = "", account = "", file, filename;
+        private string mode = "all", resultDirectory;
         private long wakeAt;
         private CancellationTokenSource stop;
         private Thread worker;
@@ -167,8 +168,23 @@ namespace YundouScore
             if (method == "GET" && path == "/api/status")
             {
                 object status;
-                lock (gate) status = new { phase, message, account, wakeAt, provinces = provinces.Values.ToArray(), canDownload = phase == "done" && file != null };
+                lock (gate) status = new { phase, message, account, wakeAt, mode, resultDirectory, provinces = provinces.Values.ToArray(),
+                    canDownload = phase == "done" && file != null, canOpen = resultDirectory != null };
                 Json(stream, 200, status); return;
+            }
+            if (method == "GET" && path.StartsWith("/api/cutoffs?", StringComparison.Ordinal))
+            {
+                try
+                {
+                    var queryText = Program.NormalizeQuery(HttpUtility.ParseQueryString(path.Substring("/api/cutoffs?".Length))["query"]);
+                    Json(stream, 200, fixture ? new Dictionary<string, int> { { "天津", 160 } } : ProvinceExport.ReadCutoffs(queryText));
+                }
+                catch (Exception ex)
+                {
+                    if (!(ex is ArgumentException || ex is InvalidDataException || ex is IOException || ex is InvalidOperationException)) throw;
+                    Error(stream, 400, "无法读取本地高中人数设置。");
+                }
+                return;
             }
             if (method == "GET" && path == "/api/result")
             {
@@ -189,6 +205,14 @@ namespace YundouScore
             }
             if (method != "POST") { Error(stream, 404, "找不到操作。"); return; }
             if (path == "/api/exit") { Json(stream, 200, new { ok = true }); Exit(); return; }
+            if (path == "/api/open")
+            {
+                string folder;
+                lock (gate) folder = resultDirectory;
+                if (folder == null || !Directory.Exists(folder)) { Error(stream, 404, "没有已保存的结果。"); return; }
+                if (!fixture) Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true, Verb = "open" });
+                Json(stream, 200, new { ok = true }); return;
+            }
             if (path == "/api/stop")
             {
                 lock (gate)
@@ -219,11 +243,18 @@ namespace YundouScore
             var choice = form["kind"];
             var refresh = form["refresh"];
             if ((choice != "official" && choice != "unofficial") || (refresh != "0" && refresh != "1")) throw new InvalidDataException();
-            if (!Start(query, choice == "official" ? "官方" : "民间", refresh == "1")) { Error(stream, 409, "已有任务在运行，请先等待或停止。"); return; }
+            ProvinceExport.Selection selection = null;
+            var taskMode = form["mode"] ?? "all";
+            try
+            {
+                if (taskMode != "all") selection = ProvinceExport.Validate(taskMode, query, form["group"], form["provinces"], form["compress"], form["cutoffs"]);
+            }
+            catch (ArgumentException ex) { Error(stream, 400, ex.Message); return; }
+            if (!Start(query, choice == "official" ? "官方" : "民间", refresh == "1", selection)) { Error(stream, 409, "已有任务在运行，请先等待或停止。"); return; }
             Json(stream, 200, new { ok = true });
         }
 
-        private bool Start(string query, string kind, bool refresh)
+        private bool Start(string query, string kind, bool refresh, ProvinceExport.Selection selection)
         {
             lock (gate)
             {
@@ -233,26 +264,34 @@ namespace YundouScore
                     try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 }
                 file = null;
+                mode = selection == null ? "all" : selection.Mode;
+                resultDirectory = null;
                 provinces.Clear(); account = ""; wakeAt = 0; phase = "working";
                 message = fixture ? "正在生成测试成绩…" : "正在打开专用 Edge 窗口…";
                 var cancellation = new CancellationTokenSource();
                 stop = cancellation;
-                worker = new Thread(() => Work(query, kind, refresh, cancellation)) { IsBackground = true };
+                worker = new Thread(() => Work(query, kind, refresh, selection, cancellation)) { IsBackground = true };
                 worker.Start();
                 return true;
             }
         }
 
-        private void Work(string query, string kind, bool refresh, CancellationTokenSource cancellation)
+        private void Work(string query, string kind, bool refresh, ProvinceExport.Selection selection, CancellationTokenSource cancellation)
         {
-            string path = Path.Combine(results, Guid.NewGuid().ToString("N") + ".xlsx");
+            string path = selection == null ? Path.Combine(results, Guid.NewGuid().ToString("N") + ".xlsx") :
+                fixture ? Path.Combine(results, Guid.NewGuid().ToString("N")) : ProvinceExport.NewOutput(query, kind);
             try
             {
-                Directory.CreateDirectory(results);
-                int code = fixture ? Demo(path, cancellation.Token) : Program.Export(query, kind, path, refresh, Apply, cancellation.Token);
+                Directory.CreateDirectory(selection == null ? results : path);
+                int code = fixture ? (selection == null ? Demo(path, cancellation.Token) : Program.DemoProvinces(path, selection, Apply, cancellation.Token)) :
+                    Program.Export(query, kind, path, refresh, Apply, cancellation.Token, selection);
                 lock (gate)
                 {
-                    if (code == 0) { file = path; filename = Program.OutputName(query, kind); phase = "done"; }
+                    if (code == 0)
+                    {
+                        if (selection == null) { file = path; filename = Program.OutputName(query, kind); }
+                        phase = "done";
+                    }
                     else phase = "failed";
                     wakeAt = 0;
                 }
@@ -263,7 +302,20 @@ namespace YundouScore
             { lock (gate) { phase = "failed"; message = ex.Message; wakeAt = 0; } }
             finally
             {
-                lock (gate) { worker = null; stop = null; cancellation.Dispose(); }
+                lock (gate)
+                {
+                    if (selection != null && Directory.Exists(path))
+                    {
+                        try
+                        {
+                            if (Directory.EnumerateFileSystemEntries(path).Any()) resultDirectory = path;
+                            else Directory.Delete(path);
+                        }
+                        catch (IOException) { }
+                        catch (UnauthorizedAccessException) { }
+                    }
+                    worker = null; stop = null; cancellation.Dispose();
+                }
             }
         }
 

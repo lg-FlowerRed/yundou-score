@@ -126,6 +126,78 @@ async (cmd, arg, account) => {
     if (!a) throw new Error(`${c.title}：成绩表没有 CSV 导出按钮。`);
     return {...c, state: '可下载', download: a.getAttribute('href')};
   });
+  if (cmd === 'codeDetails') return limited(arg, async c => {
+    try {
+      const doc = await request(c.path);
+      const terms = Object.fromEntries([...doc.querySelectorAll('dt')].map(x => [norm(x.textContent), x.nextElementSibling]));
+      if (norm(terms['状态']?.textContent) !== '已结束') return issue(c, '跳过', '比赛尚未结束');
+      const started = Number(terms['开始于']?.querySelector('[data-timestamp]')?.getAttribute('data-timestamp'));
+      if (!Number.isSafeInteger(started) || started <= 0) throw new Error('无法确认开赛时间');
+      const metadata = [...doc.querySelectorAll('.typo')].find(e => /(?:^|\n)\s*[a-z][a-z0-9_-]*\s*:\s*[0-9]+\s*(?:\n|$)/i.test(e.textContent));
+      const problems = Object.create(null);
+      for (const line of (metadata?.textContent || '').split(/\r?\n/)) {
+        const m = norm(line).match(/^([a-z][a-z0-9_-]*)\s*:\s*([0-9]+)$/i);
+        if (!m) continue;
+        if (Object.hasOwn(problems, m[2])) throw new Error('题号在比赛说明中重复');
+        problems[m[2]] = m[1];
+      }
+      const exportLink = [...doc.links].find(a => /^(?:导出所有代码|Export All Code)$/i.test(norm(a.textContent)) && a.getAttribute('href') === c.path + '/code');
+      if (!exportLink) return issue({...c,started}, '跳过', '没有「导出所有代码」入口或账号无权访问');
+      if (!Object.keys(problems).length) return issue({...c,started}, '跳过', '比赛未提供题号与题目短名的对应关系');
+      if (![...doc.links].some(a => a.getAttribute('href') === c.path + '/scoreboard')) return issue({...c,started}, '跳过', '缺少可访问的成绩表，无法匹配准考证号');
+      return {...c, started, state:'可下载', download:exportLink.getAttribute('href'), problems};
+    } catch (e) { return issue(c, '跳过', e.message || '读取比赛失败'); }
+  });
+  if (cmd === 'codeUsers') {
+    if (!detailPattern.test(arg.path)) throw new Error('比赛地址无效。');
+    const doc = await request(arg.path + '/scoreboard');
+    const users = Object.create(null);
+    for (const a of doc.querySelectorAll('tbody .col--user a[href]')) {
+      const m = a.getAttribute('href').match(/^\/d\/NOIPC\/user\/(-?[0-9]+)$/);
+      if (!m) continue;
+      const name = a.textContent.trim();
+      if (!name) continue;
+      if (Object.hasOwn(users, m[1]) && users[m[1]] !== name) throw new Error('同一个选手账号对应多个显示名。');
+      users[m[1]] = name;
+    }
+    if (!Object.keys(users).length) throw new Error('成绩表没有可匹配的选手账号。');
+    return users;
+  }
+  if (cmd === 'codeFetch') {
+    if (!detailPattern.test(arg.path) || arg.download !== arg.path + '/code') throw new Error('代码地址与比赛入口不匹配。');
+    const res = await fetch(arg.download, {credentials:'same-origin',redirect:'manual',cache:'no-store',signal:AbortSignal.timeout(120000)});
+    if (res.status === 429) throw new Error('云斗限制代码下载频率，请稍后再试。');
+    if (res.status === 403) {
+      const text = new DOMParser().parseFromString(await res.text(), 'text/html').querySelector('.error__text-container')?.textContent || '';
+      if (/Too frequent operations|OpcountExceededError|频繁/i.test(text)) throw new Error('云斗限制代码下载频率，请稍后再试。');
+      throw new Error('当前账号无权导出这个场次的代码。');
+    }
+    if (!res.ok) throw new Error(res.type === 'opaqueredirect' || res.status === 401 ? '请重新登录云斗后再试。' : '云斗未提供代码下载（HTTP '+res.status+'）。');
+    if (!res.body || !/attachment|\.zip/i.test(res.headers.get('content-disposition') || '') && !/zip|octet-stream/i.test(res.headers.get('content-type') || '')) throw new Error('云斗没有返回代码 ZIP，可能需要重新登录。');
+    const reader = res.body.getReader(), chunks = [];
+    let length = 0;
+    try {
+      while (true) {
+        const {value,done} = await reader.read();
+        if (done) break;
+        length += value.length;
+        if (length > 128 * 1024 * 1024) throw new Error('代码 ZIP 超过 128 MiB。');
+        chunks.push(value);
+      }
+    } finally { await reader.cancel().catch(() => {}); }
+    if (length < 22) throw new Error('云斗返回了空的或无效的代码 ZIP。');
+    globalThis.__yundouScoreArchive = new Blob(chunks);
+    return length;
+  }
+  if (cmd === 'codeChunk') {
+    const b = globalThis.__yundouScoreArchive;
+    if (!(b instanceof Blob) || !Number.isSafeInteger(arg) || arg < 0 || arg >= b.size) throw new Error('代码 ZIP 的数据块不可用。');
+    const bytes = new Uint8Array(await b.slice(arg,arg+524288).arrayBuffer());
+    let text = '';
+    for (let i=0;i<bytes.length;i+=8192) text += String.fromCharCode(...bytes.subarray(i,i+8192));
+    return btoa(text);
+  }
+  if (cmd === 'codeClear') { delete globalThis.__yundouScoreArchive; return true; }
   if (cmd === 'downloads') {
     if (!Array.isArray(arg) || arg.length > 3) throw new Error('不能超过云斗每个下载窗口的限额。');
     return limited(arg, async c => {

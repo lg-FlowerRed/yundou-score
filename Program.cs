@@ -120,7 +120,7 @@ namespace YundouScore
             return String.Format(Invariant, "{0}-{1}-{2:yyyyMMdd-HHmmss}.xlsx", safeName.TrimEnd('.', ' '), kind, DateTime.Now);
         }
 
-        internal static int Export(string query, string kind, string path, bool refresh, Action<Progress> report, CancellationToken ct)
+        internal static int Export(string query, string kind, string path, bool refresh, Action<Progress> report, CancellationToken ct, ProvinceExport.Selection selection = null)
         {
             using (var single = new Mutex(false, @"Local\YundouScore-" + Environment.UserName))
             {
@@ -128,18 +128,22 @@ namespace YundouScore
                 try { acquired = single.WaitOne(0); }
                 catch (AbandonedMutexException) { acquired = true; }
                 if (!acquired) throw new InvalidOperationException("已有一个云斗汇总任务在运行。");
-                try { return Run(query, kind, path, refresh, report, ct); }
+                try
+                {
+                    if (selection != null && selection.Mode == "code") return CodeExport.Run(query, kind, path, selection, report, ct);
+                    return Run(query, kind, path, refresh, report, ct, selection);
+                }
                 finally { single.ReleaseMutex(); }
             }
         }
 
-        private static string SiteScript()
+        internal static string SiteScript()
         {
             using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Site.js"))
             using (var reader = new StreamReader(stream, Encoding.UTF8)) return reader.ReadToEnd();
         }
 
-        private static int Run(string query, string kind, string path, bool refresh, Action<Progress> report, CancellationToken ct)
+        private static int Run(string query, string kind, string path, bool refresh, Action<Progress> report, CancellationToken ct, ProvinceExport.Selection selection)
         {
             Action<string> say = message => report(new Progress { phase = "working", message = message });
             ct.ThrowIfCancellationRequested();
@@ -152,9 +156,11 @@ namespace YundouScore
                 var account = edge.WaitForLogin(() => report(new Progress { phase = "login", message = "请在专用 Edge 窗口登录云斗并勾选「记住我」。完成后自动继续。" }), ct);
                 report(new Progress { phase = "working", account = account, message = "云斗登录有效，正在查找「" + query + "」…" });
                 var cache = new ScoreCache(account);
+                ProvinceExport.Remember(query, selection);
                 timer.Start();
                 Func<string, object, string> expr = (cmd, arg) => "(" + script + ")(" + edge.Argument(cmd) + "," + edge.Argument(arg) + "," + edge.Argument(account) + ")";
                 var list = edge.Evaluate<Listing>(expr("list", new { query, kind }), 90000, ct);
+                if (selection != null) list.candidates = list.candidates.Where(c => selection.Provinces.Contains(c.province)).ToList();
                 sources.AddRange(list.ignored);
                 foreach (var c in list.ignored.Where(x => x.state == "未识别")) say("未识别：" + Clean(c.title) + "（" + Clean(c.note) + "）");
                 if (list.candidates.Count == 0) { say("云斗没有找到匹配的省级场次；未生成文件。"); return 2; }
@@ -259,13 +265,74 @@ namespace YundouScore
                         pending = retry;
                     }
                 }
-                if (errors.Count != 0) throw new IOException("未生成不完整文件，重试时会复用已保存的成绩。" + String.Join("；", errors));
+                if (errors.Count != 0 && selection == null) throw new IOException("未生成不完整文件，重试时会复用已保存的成绩。" + String.Join("；", errors));
             }
             ct.ThrowIfCancellationRequested();
+            if (selection != null) return SaveProvinceSheets(query, kind, path, selection, scores, sources, report, ct);
             if (scores.Count == 0) { say("没有已结束且已有成绩的省份；未生成文件。"); return 2; }
             Xlsx.Save(path, ScoreSheet(scores), SourceSheet(sources, query, kind));
             report(new Progress { phase = "done", message = "完成：" + sources.Count(c => c.state == "已纳入") + " 个省份，" + scores.Count + " 条成绩。" });
             return 0;
+        }
+
+        private static int SaveProvinceSheets(string query, string kind, string directory, ProvinceExport.Selection choice, List<Score> scores, List<Contest> sources, Action<Progress> report, CancellationToken ct)
+        {
+            int saved = 0;
+            foreach (var province in choice.Provinces)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var input = scores.Where(s => s.Province == province).ToList();
+                    if (input.Count == 0) throw new InvalidDataException("未找到该省可用的成绩。");
+                    int cutoff = choice.Group == "full" ? 0 : choice.Cutoffs[province];
+                    var filtered = input.Where(s => ProvinceExport.MatchesGroup(s.User, province, choice.Group, cutoff)).ToList();
+                    var notes = SourceSheet(sources.Where(s => s.province == province).ToList(), query, kind);
+                    notes.Add(new object[] { province, "成绩范围", ProvinceExport.GroupName(choice.Group), null, null,
+                        choice.Group == "full" ? "未按学段筛选" : "高中实际参赛人数：" + cutoff.ToString(Invariant) + "。按准考证号数字部分筛选：≤ 该人数为高中，> 为初中。" });
+                    Xlsx.Save(Path.Combine(directory, ProvinceExport.Code(province) + "-" + province + "-" + ProvinceExport.GroupName(choice.Group) + ".xlsx"),
+                        ScoreSheet(filtered, false, input.Max(s => s.Problems.Length)), notes);
+                    saved++;
+                    report(new Progress { phase = "working", province = province, source = "成绩表", status = "已保存", count = filtered.Count, message = province + "：已保存 " + filtered.Count + " 条成绩。" });
+                }
+                catch (Exception ex)
+                {
+                    if (!(ex is InvalidDataException || ex is IOException || ex is UnauthorizedAccessException)) throw;
+                    report(new Progress { phase = "working", province = province, source = "成绩表", status = "下载失败", message = province + "：" + Clean(ex.Message) });
+                }
+            }
+            report(new Progress { phase = saved == 0 ? "failed" : "done", message = "已导出 " + saved + "/" + choice.Provinces.Length + " 省的独立成绩表。" });
+            return saved == 0 ? 2 : 0;
+        }
+
+        internal static int DemoProvinces(string path, ProvinceExport.Selection choice, Action<Progress> report, CancellationToken ct)
+        {
+            if (choice.Mode == "code")
+            {
+                foreach (var p in choice.Provinces)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var dest = Path.Combine(path, ProvinceExport.Code(p) + "-answers" + (choice.Compress ? ".zip" : ""));
+                    if (choice.Compress)
+                    {
+                        using (var f = File.Create(dest))
+                        using (var zip = new System.IO.Compression.ZipArchive(f, System.IO.Compression.ZipArchiveMode.Create))
+                        using (var w = new StreamWriter(zip.CreateEntry("sample/task/task.cpp").Open())) w.Write("// synthetic test\n");
+                    }
+                    else
+                    {
+                        var task = Path.Combine(dest, "sample", "task");
+                        Directory.CreateDirectory(task);
+                        File.WriteAllText(Path.Combine(task, "task.cpp"), "// synthetic test\n");
+                    }
+                    report(new Progress { phase = "working", province = p, source = "测试", status = "已保存", count = 1, message = "已生成测试文件。" });
+                }
+                report(new Progress { phase = "done", message = "测试代码已保存，未访问云斗。" });
+                return 0;
+            }
+            var scores = choice.Provinces.SelectMany(p => new[] { 12, 160, 178, 190 }.Select((n, i) => new Score {
+                Province = p, User = ProvinceExport.Code(p) + "-" + n.ToString("D4", Invariant), Total = 400 - i * 20, OriginalRank = i + 1, Problems = new object[] { 100 } })).ToList();
+            return SaveProvinceSheets("NOIP 2025", "测试数据", path, choice, scores, new List<Contest>(), report, ct);
         }
 
         private static List<Score> ReadCached(ScoreCache cache, Contest contest, out DateTime captured)
@@ -332,10 +399,10 @@ namespace YundouScore
         {
             internal string Filter(string s) { return new string(s.Select(ch => Char.IsControl(ch) ? ' ' : ch).Take(300).ToArray()); }
         }
-        private static IList<IList<object>> ScoreSheet(List<Score> scores)
+        private static IList<IList<object>> ScoreSheet(List<Score> scores, bool national = true, int problemCount = 0)
         {
-            var head = new List<object> { "全国排名", "省份", "省内排名", "用户", "总分" };
-            int max = scores.Max(s => s.Problems.Length);
+            var head = new List<object> { national ? "全国排名" : "本表排名", "省份", national ? "省内排名" : "云斗原排名", "用户", "总分" };
+            int max = scores.Count == 0 ? problemCount : Math.Max(problemCount, scores.Max(s => s.Problems.Length));
             for (int i = 1; i <= max; ++i) head.Add("第" + i.ToString(Invariant) + "题");
             var result = new List<IList<object>>(scores.Count + 1) { head };
             var sorted = scores.OrderByDescending(s => s.Total).ThenBy(s => s.Province, StringComparer.Ordinal).ThenBy(s => s.OriginalRank).ThenBy(s => s.User, StringComparer.Ordinal);
@@ -431,6 +498,8 @@ namespace YundouScore
             var b = new Contest { province = "海南", title = "测试二", state = "已纳入", path = "/d/NOIPC/contest/000000000000000000000002", csv = "#,用户,总分数,#1 T,#2 U\n1,\"多\n行\"\"名\",120.5,90.5,30\n2,样例,100,100,\n" };
             TestContestWireFormat(a);
             TestCache(a, b);
+            ProvinceExport.SelfTest();
+            AnswerArchive.SelfTest();
             var ar = Parse(a);
             var br = Parse(b);
             if (ar[1].User != "0003" || ar[1].Problems[1] != null || br[0].User != "多\n行\"名") throw new Exception("CSV parser failed");
