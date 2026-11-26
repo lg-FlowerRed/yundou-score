@@ -24,7 +24,10 @@ namespace YundouScore
             public string download { get; set; }
             public int retrySeconds { get; set; }
             public string downloadError { get; set; }
+            // These fields are written only after parsing or reading the local cache.
+            [System.Web.Script.Serialization.ScriptIgnore]
             public string origin { get; set; }
+            [System.Web.Script.Serialization.ScriptIgnore]
             public DateTime captured { get; set; }
             public long started { get; set; }
             public int count { get; set; }
@@ -396,10 +399,37 @@ namespace YundouScore
             finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
         }
 
+        private static void TestContestWireFormat(Contest candidate)
+        {
+            // Match the Edge path: serialize the request, then convert a JS result
+            // represented as untyped dictionaries back to the C# model.
+            var json = new System.Web.Script.Serialization.JavaScriptSerializer();
+            var wire = json.Serialize(new[] { candidate });
+            var response = json.ConvertToType<List<Contest>>(json.DeserializeObject(wire.Replace("\\/", "/"))).Single();
+            if (response.path != candidate.path || response.csv != candidate.csv || response.captured != default(DateTime))
+                throw new Exception("Contest browser round trip changed payload fields");
+
+            candidate.origin = "本地缓存";
+            candidate.captured = new DateTime(2026, 11, 26, 10, 0, 0, DateTimeKind.Utc);
+            try
+            {
+                wire = json.Serialize(new[] { candidate });
+                response = json.ConvertToType<List<Contest>>(json.DeserializeObject(wire)).Single();
+                if (wire.Contains("\"captured\"") || wire.Contains("\"origin\"") || response.captured != default(DateTime) || response.origin != null)
+                    throw new Exception("Local cache metadata leaked into the browser payload");
+                var source = SourceSheet(new List<Contest> { candidate }, "测试赛事", "官方").Last();
+                if (!Equals(source[6], "本地缓存") || !Equals(source[7], candidate.captured.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", Invariant)))
+                    throw new Exception("Workbook lost cache provenance metadata");
+            }
+            finally { candidate.origin = null; candidate.captured = default(DateTime); }
+            Console.WriteLine("Browser payload: contest round trip and local metadata checks passed.");
+        }
+
         private static void SelfTest()
         {
             var a = new Contest { province = "甘肃", title = "测试一", state = "已纳入", path = "/d/NOIPC/contest/000000000000000000000001", csv = "﻿#,用户,总分数,#1 T,#2 U\r\n1,\"=SUM(1,2)\",120.5,100,20.5\r\n2,\"0003\",9.5,9.5,-\r\n" };
             var b = new Contest { province = "海南", title = "测试二", state = "已纳入", path = "/d/NOIPC/contest/000000000000000000000002", csv = "#,用户,总分数,#1 T,#2 U\n1,\"多\n行\"\"名\",120.5,90.5,30\n2,样例,100,100,\n" };
+            TestContestWireFormat(a);
             TestCache(a, b);
             var ar = Parse(a);
             var br = Parse(b);
