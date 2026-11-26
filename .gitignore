@@ -1,0 +1,21 @@
+# Local tooling and browser output
+/.claude/
+/.checks/
+/.playwright-mcp/
+/.vs/
+/bin/
+/obj/
+
+# Builds, archives and exported or cached scores
+*.exe
+*.pdb
+*.zip
+*.xlsx
+*.csv
+*.cache
+*.tmp
+
+# Local settings and credentials
+.env
+.env.*
+*.user

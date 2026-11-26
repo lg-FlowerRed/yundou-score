@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="yundou-token" content="__SESSION_TOKEN__">
+  <title>阅卷回执｜云斗成绩汇总</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='3' width='22' height='26' rx='3' fill='%231B43B8'/%3E%3Cpath d='M11 11h10m-10 5h10m-10 5h6' stroke='%23fff' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <p class="brand"><span class="brand-mark" aria-hidden="true"></span>云斗成绩汇总</p>
+      <button type="button" class="button button-quiet" id="exit" disabled>退出程序</button>
+    </header>
+
+    <main class="layout">
+      <section class="query" aria-labelledby="page-title">
+        <h1 id="page-title">阅卷回执</h1>
+        <p class="intro">按赛事汇总云斗各省成绩，导出 Excel 工作簿。</p>
+        <form id="query-form" autocomplete="off">
+          <fieldset class="form-fields" id="query-fields" disabled>
+            <legend class="sr-only">查询设置</legend>
+            <label for="query" class="field-label">赛事名称</label>
+            <input id="query" name="query" type="text" required placeholder="例如：NOIP 2025">
+
+            <fieldset class="kind">
+              <legend class="field-label">数据类型</legend>
+              <div class="options">
+                <label class="option"><input type="radio" name="kind" value="official" checked>官方</label>
+                <label class="option"><input type="radio" name="kind" value="unofficial">民间</label>
+              </div>
+            </fieldset>
+
+            <label class="option refresh"><input type="checkbox" name="refresh" aria-describedby="refresh-hint">重新下载成绩</label>
+            <p id="refresh-hint" class="hint">不勾选时优先使用本地缓存。</p>
+            <button type="submit" class="button button-primary" id="start">开始汇总</button>
+          </fieldset>
+        </form>
+        <p class="scope">只汇总当前账号可查看的成绩，结果不是 CCF 发布的官方全国榜。</p>
+      </section>
+
+      <section class="receipt" aria-labelledby="receipt-title">
+        <header class="receipt-head">
+          <div class="receipt-title-line">
+            <h2 id="receipt-title" tabindex="-1">省份回执</h2>
+            <button type="button" class="button button-stop" id="stop" hidden disabled>停止汇总</button>
+          </div>
+          <div class="status" id="status" role="status" aria-atomic="true">
+            <span id="phase" class="phase" data-tone="neutral">连接中</span>
+            <p id="message">正在连接本机程序…</p>
+            <p class="login-help" id="login-help" hidden>请在程序打开的 Edge 窗口完成云斗登录或验证，登录时勾选「记住我」。完成后本页会自动继续。</p>
+            <p class="account" id="account-row" hidden>已验证账号：<bdi id="account"></bdi></p>
+          </div>
+          <p id="countdown-row" class="countdown" hidden>下一批下载：<span id="countdown"></span></p>
+          <p id="action-message" class="action-message" role="status" aria-atomic="true"></p>
+        </header>
+
+        <table class="province-table">
+          <caption class="sr-only">各省成绩汇总进度、来源和记录数</caption>
+          <thead>
+            <tr>
+              <th scope="col">省份</th>
+              <th scope="col">进度</th>
+              <th scope="col">来源</th>
+              <th scope="col">记录数</th>
+            </tr>
+          </thead>
+          <tbody id="provinces">
+            <tr><td class="empty" colspan="4">开始汇总后，这里会显示各省进度。</td></tr>
+          </tbody>
+        </table>
+
+        <footer class="receipt-footer">
+          <p id="result-message">工作簿生成后即可下载。</p>
+          <button type="button" class="button button-download" id="download" disabled>下载 Excel</button>
+        </footer>
+      </section>
+    </main>
+  </div>
+  <noscript><p class="noscript">请启用 JavaScript，再重新打开本页。</p></noscript>
+</body>
+</html>
